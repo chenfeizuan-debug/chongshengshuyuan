@@ -532,16 +532,39 @@ function utf8String(bytes) {
   return decodeURIComponent(escape(s));
 }
 function saveBlob(blob, filename) {
+  /* 先把上一轮留下的临时锚点清掉 */
+  var olds = document.querySelectorAll('a[data-dl-tmp="1"]');
+  for (var k = 0; k < olds.length; k++) {
+    if (olds[k].parentNode) olds[k].parentNode.removeChild(olds[k]);
+  }
+
   var url = URL.createObjectURL(blob);
   var a = document.createElement("a");
-  a.href = url; a.download = filename; a.rel = "noopener";
+  a.href = url;
+  a.download = filename;
+  /* 手机浏览器（Chrome / Safari）判断「这是一次下载」靠的是真实的用户手势 +
+     DOM 里活着的 <a download>。早先版本点完立刻 removeChild 并 revokeObjectURL，
+     部分手机因此没在地址栏亮出下载图标，得切走再切回来才出现。
+     这里保留锚点，延迟回收，让浏览器把这次下载登记进去。 */
+  a.rel = "noopener";
   a.style.display = "none";
+  /* 打个标记，下次生成前统一清掉，免得页面上堆一堆隐藏锚点 */
+  a.setAttribute("data-dl-tmp", "1");
   document.body.appendChild(a);
-  a.click();
-  setTimeout(function () {
-    document.body.removeChild(a);
-    setTimeout(function () { URL.revokeObjectURL(url); }, 40000);
-  }, 0);
+
+  /* 优先用原生 click；个别旧 WebView 上 dispatchEvent 更稳。 */
+  try {
+    a.click();
+  } catch (e) {
+    try {
+      var ev = document.createEvent("MouseEvents");
+      ev.initEvent("click", true, true);
+      a.dispatchEvent(ev);
+    } catch (e2) {}
+  }
+
+  /* 结果面板里那个「手动保存」用的也是这个 url，
+     所以不能在返回前 revoke —— 交给调用方在换格式/重生成时统一回收。 */
   return url;
 }
 
@@ -755,43 +778,55 @@ function run() {
   if (p) { setHint("bad", "!", p); return; }
 
   make.disabled = true;
-  var oldLabel = make.textContent;
   make.textContent = "正在生成…";
 
-  setTimeout(function () {
-    try {
-      var s = site();
-      var r = build(key);
-      var bytes = utf8Bytes(r.text);
-      var baseName = s.fileBase;
-      var data, filename;
-      if (curFmt === "xbs") {
-        data = new Blob([encodeXbs(bytes)], { type: "application/octet-stream" });
-        filename = baseName + ".xbs";
-      } else {
-        data = new Blob([bytes], { type: "application/json" });
-        filename = baseName + ".json";
-      }
-      var url = saveBlob(data, filename);
+  /* 关键：整段同步做完，不要放进 setTimeout。
+     手机浏览器（iOS Safari、移动 Chrome）只认「在用户手势的调用栈里」发起的下载，
+     才会在地址栏亮出下载标识。之前这里套了一层 setTimeout(…, 40)，
+     下载就跑到了手势之外，表现就是：文件其实下来了，
+     但地址栏那个下载标识不出现，得切到别的标签页再切回来才刷新出来。
+     为了让「正在生成…」这行字先画出来，这里强制一次回流再干重活。 */
+  void make.offsetHeight;
 
-      $("rName").textContent = filename;
-      $("rSize").textContent = data.size.toLocaleString() + " 字节";
-      $("rAlias").textContent = r.aliases.join("、");
-      $("rSaved").innerHTML = "";
-      var a = document.createElement("a");
-      a.href = url; a.download = filename; a.textContent = "没自动下载？点这里手动保存 " + filename;
-      a.style.color = "inherit";
-      $("rSaved").appendChild(a);
-      result.className = "show";
-      setHint("ok", "\u2713", "已生成 " + r.slotCount + " 处替换，可以导入了");
-      if (result.scrollIntoView) result.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    } catch (e) {
-      showFatal("生成失败", String(e && e.message ? e.message : e));
-    } finally {
-      make.textContent = (curFmt === "xbs") ? "生成 .xbs 文件" : "生成 .json 文件";
-      make.disabled = !!keyProblem(cleanKey(input.value));
+  try {
+    var s = site();
+    var r = build(key);
+    var bytes = utf8Bytes(r.text);
+    var baseName = s.fileBase;
+    var data, filename;
+    if (curFmt === "xbs") {
+      data = new Blob([encodeXbs(bytes)], { type: "application/octet-stream" });
+      filename = baseName + ".xbs";
+    } else {
+      data = new Blob([bytes], { type: "application/json" });
+      filename = baseName + ".json";
     }
-  }, 40);
+
+    /* 先回收上一次的 objectURL，再建新的（面板里那个手动保存链接马上会被替换） */
+    if (window._lastBlobUrl) {
+      try { URL.revokeObjectURL(window._lastBlobUrl); } catch (e) {}
+      window._lastBlobUrl = "";
+    }
+    var url = saveBlob(data, filename);
+    window._lastBlobUrl = url;
+
+    $("rName").textContent = filename;
+    $("rSize").textContent = data.size.toLocaleString() + " 字节";
+    $("rAlias").textContent = r.aliases.join("、");
+    $("rSaved").innerHTML = "";
+    var a = document.createElement("a");
+    a.href = url; a.download = filename; a.textContent = "没自动下载？点这里手动保存 " + filename;
+    a.style.color = "inherit";
+    $("rSaved").appendChild(a);
+    result.className = "show";
+    setHint("ok", "\u2713", "已生成 " + r.slotCount + " 处替换，可以导入了");
+    if (result.scrollIntoView) result.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) {
+    showFatal("生成失败", String(e && e.message ? e.message : e));
+  } finally {
+    make.textContent = (curFmt === "xbs") ? "生成 .xbs 文件" : "生成 .json 文件";
+    make.disabled = !!keyProblem(cleanKey(input.value));
+  }
 }
 
 make.addEventListener("click", function () { run(); });
