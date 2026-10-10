@@ -168,13 +168,39 @@
   }
   .slip dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; font-size: 14px; }
   .slip dt { color: var(--ink-3); }
-  .slip dd { margin: 0; font-family: var(--mono); font-size: 13px; word-break: break-all; }
+  .slip dd { margin: 0; font-family: var(--mono); font-size: 13px; }
+  /* 默认不在单词中间断行（break-all 会把「v2.8.3」拆成「v2.8.」/「3」，
+     也会把别名列表断得七零八落）。顿号、逗号这些正常断点照旧可用。 */
+  .slip dd { word-break: normal; overflow-wrap: anywhere; }
+  /* 每个别名占一行，免得长别名被从中间（比如「听书v2.8.3」）硬断成两截。 */
+  .slip dd .al { display: block; }
+  /* 文件名往往比右列宽，让它独占一整行。 */
+  .slip dd.wide { grid-column: 1 / -1; }
 
   .dl-name {
     font-family: var(--mono); font-size: 13.5px;
     margin-top: 13px; padding: 11px 13px;
     background: rgba(47,107,79,.07); border: 1px solid rgba(47,107,79,.24);
     border-radius: 11px; color: #22452F; word-break: break-all;
+  }
+
+  /* 手动保存按钮：手机浏览器（尤其 iOS Safari）有时不会立刻在地址栏亮出下载标识，
+     所以这里给一个随时能点、点了一定有反应的显眼按钮兜底。 */
+  .savebtn {
+    display: block; width: 100%; box-sizing: border-box;
+    min-height: 52px; margin-top: 13px; padding: 14px 16px;
+    border-radius: 12px; border: 1px solid var(--cinnabar);
+    background: var(--cinnabar); color: #fff;
+    font-family: inherit; font-size: 16px; font-weight: 700;
+    text-align: center; text-decoration: none; line-height: 1.35;
+    cursor: pointer;
+  }
+  .savebtn small {
+    display: block; font-size: 12.5px; font-weight: 400;
+    opacity: .92; margin-top: 3px; word-break: break-all;
+  }
+  .savenote {
+    font-size: 13px; color: var(--ink-3); margin: 9px 0 0; line-height: 1.6;
   }
 
   /* ---------- details / faq ---------- */
@@ -332,12 +358,12 @@
     <div id="result">
       <div class="slip">
         <dl>
-          <dt>文件名</dt><dd id="rName">—</dd>
+          <dt>文件名</dt><dd id="rName" class="wide">—</dd>
           <dt>大小</dt><dd id="rSize">—</dd>
-          <dt>包含</dt><dd id="rAlias">—</dd>
+          <dt>包含</dt><dd id="rAlias" class="wide">—</dd>
         </dl>
       </div>
-      <div class="dl-name" id="rSaved"></div>
+      <div id="rSaved"></div>
       <div class="row">
         <button class="btn btn-ghost" id="again" type="button">再生成一次</button>
         <button class="btn btn-ghost" id="asOther" type="button">换成另一种格式</button>
@@ -563,9 +589,23 @@ function saveBlob(blob, filename) {
     } catch (e2) {}
   }
 
-  /* 结果面板里那个「手动保存」用的也是这个 url，
+  downloadNudge();
+
+  /* 结果面板里那个「保存到手机」按钮用的是同一个 url，
      所以不能在返回前 revoke —— 交给调用方在换格式/重生成时统一回收。 */
   return url;
+}
+
+/* iOS Safari 有个老毛病：文件其实下下来了，但地址栏左边那个下载标识
+   要切到别的标签页再切回来才出现。原因是 Safari 没有因为这次下载而重绘自己的外框。
+   这里做一次肉眼看不见的重绘触发（标题加一个零宽字符再改回来），
+   多数情况下能让标识立刻显示出来。失败了也无所谓，不影响下载本身。 */
+function downloadNudge() {
+  try {
+    var t = document.title;
+    document.title = t + "\u200b";
+    setTimeout(function () { document.title = t; }, 80);
+  } catch (e) {}
 }
 
 
@@ -771,6 +811,31 @@ function build(key) {
   return { text: body, aliases: names, slotCount: slots.length };
 }
 
+/* 把文件名写进元素，并在扩展名（.xbs / .json）前面放一个换行点。
+   窄屏放不下时就从这里断，而不是把最后一个字母挤成孤字。 */
+function setFileName(el, name) {
+  el.textContent = "";
+  var dot = String(name).lastIndexOf(".");
+  if (dot > 0) {
+    el.appendChild(document.createTextNode(name.slice(0, dot)));
+    el.appendChild(document.createElement("wbr"));
+    el.appendChild(document.createTextNode(name.slice(dot)));
+  } else {
+    el.textContent = name;
+  }
+}
+
+/* 每个别名单独一行，长名字也不会被从中间硬断。 */
+function setAliasList(el, names) {
+  el.textContent = "";
+  for (var i = 0; i < names.length; i++) {
+    var s = document.createElement("span");
+    s.className = "al";
+    s.textContent = names[i];
+    el.appendChild(s);
+  }
+}
+
 function run() {
   fatal.className = "fatal";
   var key = cleanKey(input.value);
@@ -780,9 +845,9 @@ function run() {
   make.disabled = true;
   make.textContent = "正在生成…";
 
-  /* 关键：整段同步做完，不要放进 setTimeout。
+  /* 关键：整段同步做完，不要延迟到下一个任务里执行。
      手机浏览器（iOS Safari、移动 Chrome）只认「在用户手势的调用栈里」发起的下载，
-     才会在地址栏亮出下载标识。之前这里套了一层 setTimeout(…, 40)，
+     才会在地址栏亮出下载标识。之前这里套了一层 40 毫秒的延迟定时器，
      下载就跑到了手势之外，表现就是：文件其实下来了，
      但地址栏那个下载标识不出现，得切到别的标签页再切回来才刷新出来。
      为了让「正在生成…」这行字先画出来，这里强制一次回流再干重活。 */
@@ -810,14 +875,33 @@ function run() {
     var url = saveBlob(data, filename);
     window._lastBlobUrl = url;
 
-    $("rName").textContent = filename;
+    setFileName($("rName"), filename);
     $("rSize").textContent = data.size.toLocaleString() + " 字节";
-    $("rAlias").textContent = r.aliases.join("、");
+    setAliasList($("rAlias"), r.aliases);
     $("rSaved").innerHTML = "";
+    /* 主按钮：点了必定触发一次下载。手机浏览器如果没自动亮下载标识，
+       点这个按钮等于用「用户手势」再发一次，标识就会出来。 */
     var a = document.createElement("a");
-    a.href = url; a.download = filename; a.textContent = "没自动下载？点这里手动保存 " + filename;
-    a.style.color = "inherit";
+    a.className = "savebtn";
+    a.href = url;
+    a.download = filename;
+    a.setAttribute("role", "button");
+    var lab = document.createElement("span");
+    lab.textContent = "保存到手机";
+    var sub = document.createElement("small");
+    sub.textContent = filename;
+    a.appendChild(lab);
+    a.appendChild(sub);
+    /* 兜底按钮用的是真实用户点击，直接走浏览器原生下载，不再自己 click()。 */
+    a.addEventListener("click", function () { downloadNudge(); });
     $("rSaved").appendChild(a);
+
+    var note = document.createElement("p");
+    note.className = "savenote";
+    note.textContent = "文件一般会直接进「文件」App 的「下载」里。" +
+      "如果没找到，就点上面的按钮。";
+    $("rSaved").appendChild(note);
+
     result.className = "show";
     setHint("ok", "\u2713", "已生成 " + r.slotCount + " 处替换，可以导入了");
     if (result.scrollIntoView) result.scrollIntoView({ behavior: "smooth", block: "nearest" });
