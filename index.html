@@ -194,6 +194,9 @@
     font-family: inherit; font-size: 16px; font-weight: 700;
     text-align: center; text-decoration: none; line-height: 1.35;
     cursor: pointer;
+    /* 这个类同时用在 <a> 和 <button> 上（走系统分享面板时是 button），
+       去掉系统默认外观，两者长得一样 */
+    appearance: none; -webkit-appearance: none;
   }
   .savebtn small {
     display: block; font-size: 12.5px; font-weight: 400;
@@ -565,12 +568,13 @@ function makeBlobUrl(blob) {
 }
 
 /* 真正触发下载。必须在用户手势的调用栈里同步调用。
-   这个函数踩过好几次坑，四条别再改回去：
+   这个函数踩过好几次坑，别再改回去：
    1) 不能包进 setTimeout / Promise.then —— 出了手势栈，手机浏览器就不认这次下载；
    2) 锚点要真的插进 DOM，别点完立刻 removeChild；
    3) 点完不要马上 revokeObjectURL，否则下载可能被截断；
-   4) 这一句必须是点击处理里的最后一个同步动作。后面立刻让出主线程，
-      好让 Safari 有机会重画它自己的界面（地址栏）—— 下载标识就长在地址栏上。 */
+   4) 锚点不要用 display:none。有些手机浏览器对「没参与排版的元素」发起的下载
+      处理得不完整；改成挪到屏幕外，元素仍在布局树里，行为最接近真实链接。
+   5) 这一句仍是整段点击处理里最后一个同步动作。 */
 function triggerDownload(url, filename) {
   var olds = document.querySelectorAll('a[data-dl-tmp="1"]');
   for (var k = 0; k < olds.length; k++) {
@@ -581,7 +585,14 @@ function triggerDownload(url, filename) {
   a.href = url;
   a.download = filename;
   a.rel = "noopener";
-  a.style.display = "none";
+  /* 挪出可视区，而不是 display:none */
+  a.style.position = "absolute";
+  a.style.left = "-9999px";
+  a.style.top = "0";
+  a.style.width = "1px";
+  a.style.height = "1px";
+  a.style.opacity = "0";
+  a.setAttribute("aria-hidden", "true");
   /* 打个标记，下次生成前统一清掉，免得页面上堆一堆隐藏锚点 */
   a.setAttribute("data-dl-tmp", "1");
   document.body.appendChild(a);
@@ -598,29 +609,19 @@ function triggerDownload(url, filename) {
   }
 }
 
-/* 催一下手机浏览器把地址栏重画一遍。
-   现象：文件其实已经下下来了，但地址栏左边那个下载标识不出现，
-   得切到别的标签页再切回来才有。原因是浏览器的下载状态已经更新，
-   可它自己那条地址栏没重画；切标签会让整块界面重排，所以一回来就看见了。
-   页内唯一能做的就是「制造一次地址栏必须重画的变化」。这里叠三种最便宜的手段，
-   任何一种生效就够了。全部包在 try 里，失败也不影响下载本身。 */
-function chromeRepaint() {
-  /* 1) 改 URL：地址栏文字变了，浏览器就得重画地址栏。
-        用 replaceState，不留历史记录，返回键行为不变。 */
-  try {
-    var base = location.href.split("#")[0];
-    history.replaceState(null, "", base + "#dl");
-    history.replaceState(null, "", base);
-  } catch (e) {}
-
-  /* 2) 标题微动一下。改回来用 setTimeout，不占用手势栈。 */
-  try {
-    var t = document.title;
-    document.title = t + "\u200b";
-    setTimeout(function () { document.title = t; }, 60);
-  } catch (e) {}
-
-  /* 3) 滚动 1 像素再滚回来：手机上滚动会牵动地址栏收缩/展开，等于逼它重排。 */
+/* 让出主线程一次，别让这一轮点击任务一直占着。
+   【别再往这里加任何"催浏览器重画"的招数。】
+   实测结论（2026-10-11，试了三轮）：文件确实下下来了，但地址栏左边那个下载标识不出现，
+   切到别的标签页再切回来才有。原因不在网页里 —— 浏览器的界面（地址栏）跑在**另一个
+   进程**，网页没有 API 能指挥它重画。以下手段全部实测无效：
+     · 改 hash：地址栏只显示域名，文字没变，它不用重画；
+     · 改标题：标题不在地址栏里；
+     · 程序滚动：只有真手指滑才会牵动地址栏的收缩动画；
+     · 改历史记录：打不中，而且改历史记录有可能干扰 Safari 把「这次下载」和当前
+       历史条目关联起来，有害无益 —— 已删除，别再写回来。
+   真正管用的路在结果面板：系统分享面板（navigator.share）/ 真实可见的下载链接。
+   所以这个函数只负责"让出一次"，请不要给它改名成 repaint 之类，也不要往里加东西。 */
+function yieldOnce() {
   try {
     var y = window.pageYOffset;
     window.scrollTo(0, y + 1);
@@ -922,26 +923,63 @@ function run() {
     setFileName($("rName"), filename);
     $("rSize").textContent = data.size.toLocaleString() + " 字节";
     setAliasList($("rAlias"), r.aliases);
+    /* ---- 保存按钮 ----
+       地址栏那个下载标识是浏览器自己的界面，网页控制不了（试过三轮，没用）。
+       所以这里给一条**一定看得见**的路：
+         1) 浏览器支持「分享文件」时（iOS Safari 15+ / Android Chrome 93+），
+            点按钮弹系统面板，里面直接有「存储到"文件"」/「保存到…」。
+            这是系统原生界面，不依赖地址栏那个标识。
+         2) 不支持就退回普通 <a download>：真实手指点真实链接，
+            任何浏览器都会正常存下来。 */
+    var shareFile = null;
+    try {
+      if (navigator.canShare && window.File) {
+        shareFile = new File([data], filename, { type: "application/octet-stream" });
+        if (!navigator.canShare({ files: [shareFile] })) shareFile = null;
+      }
+    } catch (e) { shareFile = null; }
+
     $("rSaved").innerHTML = "";
-    var a = document.createElement("a");
-    a.className = "savebtn";
-    a.href = url;
-    a.download = filename;
+    var a;
+    if (shareFile) {
+      a = document.createElement("button");
+      a.type = "button";
+      a.addEventListener("click", function () {
+        /* 用真手指的这一次手势调系统分享；失败就退回普通下载 */
+        try {
+          navigator.share({ files: [shareFile], title: filename })
+            .catch(function () {});
+        } catch (e) {
+          if (window._lastBlobUrl) {
+            var fb = document.createElement("a");
+            fb.href = window._lastBlobUrl; fb.download = filename;
+            document.body.appendChild(fb); fb.click();
+          }
+        }
+      });
+    } else {
+      a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.addEventListener("click", function () { setTimeout(yieldOnce, 0); });
+    }
     a.setAttribute("role", "button");
+    /* 两个分支都要这个类，别只在其中一个分支里设 —— 漏了按钮就没样式 */
+    a.className = "savebtn";
     var lab = document.createElement("span");
     lab.textContent = "保存到手机";
     var sub = document.createElement("small");
     sub.textContent = filename;
     a.appendChild(lab);
     a.appendChild(sub);
-    /* 这是真实用户点击、真实 <a download>，走浏览器原生下载，一定会亮下载标识。 */
-    a.addEventListener("click", function () { setTimeout(chromeRepaint, 0); });
     $("rSaved").appendChild(a);
 
     var note = document.createElement("p");
     note.className = "savenote";
-    note.textContent = "文件会存进手机的「下载」或「文件」App。" +
-      "如果没自动存，就点上面的按钮。";
+    note.textContent = shareFile
+      ? "点上面的按钮会弹出手机的系统菜单，选「存储到\u201c文件\u201d」即可。" +
+        "生成时已经自动存过一次，没找到文件就点它。"
+      : "文件会存进手机的「下载」或「文件」。没自动存就点上面的按钮。";
     $("rSaved").appendChild(note);
 
     result.className = "show";
@@ -950,7 +988,7 @@ function run() {
     /* ↓ 整段点击处理的最后一个同步动作：触发下载（仍在手势调用栈里）。
        紧接着让出主线程，给浏览器重画地址栏的机会。 */
     triggerDownload(url, filename);
-    setTimeout(chromeRepaint, 0);
+    setTimeout(yieldOnce, 0);
     /* 滚动放到再后面一点，免得平滑滚动和上面那次地址栏重排互相干扰 */
     setTimeout(function () {
       if (result.scrollIntoView) result.scrollIntoView({ behavior: "smooth", block: "nearest" });
