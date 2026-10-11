@@ -6,6 +6,14 @@
 <meta name="theme-color" content="#F7F3EC">
 <meta name="description" content="填上你自己的 API key，当场生成书源文件：.xbs 给香色闺阁，.json 给轻悦时光。重生聚合v1.8.1 与 syiism聚合v2.8.3 两份都能生成，全程在本机处理，不上传任何服务器。">
 <title>书源生成器 · 两站可选</title>
+<script>
+/* 必须放在 head 里、越早越好：关掉浏览器的「恢复上次滚动位置」。
+   这一页"下载后自动刷新"回来时必须停在页面顶部 —— 只要页面是滚下去的，
+   iOS Safari 的底部工具栏就是收起状态，左下角的下载图标没地方显示，等于白刷新。
+   history.scrollRestoration 是每个文档各自的属性，放在 body 末尾设就太晚了，
+   浏览器可能已经把滚动位置恢复完了。 */
+try { if ("scrollRestoration" in history) history.scrollRestoration = "manual"; } catch (e) {}
+</script>
 <style>
   :root {
     --paper:      #F7F3EC;
@@ -206,6 +214,29 @@
     font-size: 13px; color: var(--ink-3); margin: 9px 0 0; line-height: 1.6;
   }
 
+  /* 下载后刷新页面时顶部那条"已经存好了" */
+  .savedbanner {
+    background: #EAF5EE; border: 1px solid #9CCBAF; border-radius: 12px;
+    padding: 13px 15px; margin: 0 0 16px;
+  }
+  .savedbanner .ttl {
+    font-weight: 700; font-size: 15px; color: #2F6B4F; margin: 0 0 6px;
+  }
+  .savedbanner .fname {
+    font-size: 13.5px; color: #1A1714; margin: 0 0 4px;
+    word-break: normal; overflow-wrap: anywhere;
+  }
+  .savedbanner .where {
+    font-size: 13px; color: #4A443E; margin: 0; line-height: 1.6;
+  }
+  .savedbanner .row { margin-top: 10px; }
+  .savedbanner button {
+    min-height: 44px; padding: 10px 16px; border-radius: 10px;
+    border: 1px solid #2F6B4F; background: #2F6B4F; color: #fff;
+    font: 700 14.5px/1.3 inherit; cursor: pointer;
+    appearance: none; -webkit-appearance: none;
+  }
+
   /* ---------- details / faq ---------- */
   details {
     border-top: 1px solid var(--line);
@@ -299,6 +330,11 @@
       手机上就能做完，<b>不需要电脑</b>。
     </p>
   </header>
+
+  <!-- 下载后刷新页面，这里显示"已经存好了"。
+       放在最上面是有意的：iOS Safari 的底部工具栏在页面滚动时会收起，
+       把内容放页面顶部就能在不滚动的情况下看到，工具栏也保持展开。 -->
+  <div id="savedBanner" class="savedbanner" hidden></div>
 
   <div class="step anim" style="animation-delay:180ms">
     <span class="n">一</span>
@@ -609,24 +645,92 @@ function triggerDownload(url, filename) {
   }
 }
 
-/* 让出主线程一次，别让这一轮点击任务一直占着。
-   【别再往这里加任何"催浏览器重画"的招数。】
-   实测结论（2026-10-11，试了三轮）：文件确实下下来了，但地址栏左边那个下载标识不出现，
-   切到别的标签页再切回来才有。原因不在网页里 —— 浏览器的界面（地址栏）跑在**另一个
-   进程**，网页没有 API 能指挥它重画。以下手段全部实测无效：
-     · 改 hash：地址栏只显示域名，文字没变，它不用重画；
-     · 改标题：标题不在地址栏里；
-     · 程序滚动：只有真手指滑才会牵动地址栏的收缩动画；
-     · 改历史记录：打不中，而且改历史记录有可能干扰 Safari 把「这次下载」和当前
-       历史条目关联起来，有害无益 —— 已删除，别再写回来。
-   真正管用的路在结果面板：系统分享面板（navigator.share）/ 真实可见的下载链接。
-   所以这个函数只负责"让出一次"，请不要给它改名成 repaint 之类，也不要往里加东西。 */
+/* 让出主线程一次。
+   【这里不滚动。】用户实测：iOS Safari 底部工具栏在页面上下滑动时自动收起，
+   左下角的「大小」和下载图标一起消失。所以下载之后**绝不能**再滚页面 ——
+   以前这里滚 1 像素，方向就是错的。 */
 function yieldOnce() {
+  /* 空函数：只作为 setTimeout 的回调占位，让出一次任务。
+     不要往这里加滚动、也不要加任何"催浏览器重画"的招数（试过三轮，全部无效）。 */
+}
+
+/* ---------- 下载后刷新页面（这是下载标识问题的真正解法）----------
+   实测（2026-10-11，用户在自己手机上确认）：
+   iOS Safari 的底部工具栏在页面上下滑动时会自动收起，左下角那个「大小」和下载
+   图标一起消失。本页生成后会滚动到结果面板 → 工具栏收起 → 下载标识无处显示，
+   于是"看起来没下载"。切标签页或点刷新会把工具栏恢复成展开状态，标识立刻出现。
+
+   网页没有任何 API 能命令浏览器把工具栏展开（地址栏和工具栏跑在另一个进程），
+   所以唯一可靠的动作就是：下载发出去之后，刷新一次页面。
+   刷新前把结果存进 sessionStorage，刷新后恢复显示，不会重复下载。 */
+var SAVED_SS = "dsh_last_dl";
+var RELOAD_DELAY = 1500;   /* 等下载落地再刷新，别把 blob 下载截断 */
+
+function isMobileBrowser() {
+  return /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent || "");
+}
+
+function scheduleReloadAfterDownload(info) {
+  /* 桌面浏览器没这个毛病，刷新只会烦人 —— 只在手机上做。 */
+  if (!isMobileBrowser()) return;
+  window.__reloadScheduled = true;
+  /* 句柄挂在 window 上：测试可以据此断言"确实安排了刷新"，也能先 clearTimeout
+     再继续跑后面的断言，不至于被刷新打断。 */
+  window.__reloadTimer = setTimeout(function () {
+    try { sessionStorage.setItem(SAVED_SS, JSON.stringify(info)); } catch (e) {}
+    try { location.reload(); } catch (e) {}
+  }, RELOAD_DELAY);
+}
+
+function takeSaved() {
+  var raw = null;
+  try { raw = sessionStorage.getItem(SAVED_SS); } catch (e) { return null; }
+  if (!raw) return null;
+  try { sessionStorage.removeItem(SAVED_SS); } catch (e) {}
   try {
-    var y = window.pageYOffset;
-    window.scrollTo(0, y + 1);
-    window.scrollTo(0, y);
-  } catch (e) {}
+    var s = JSON.parse(raw);
+    /* 超过 3 分钟的标记不要 —— 用户可能只是重新打开了页面 */
+    if (!s || !s.t || (Date.now() - s.t) > 180000) return null;
+    return s;
+  } catch (e) { return null; }
+}
+
+function showSavedBanner(s) {
+  var box = $("savedBanner");
+  if (!box) return;
+  box.innerHTML = "";
+
+  var ttl = document.createElement("p");
+  ttl.className = "ttl";
+  ttl.textContent = "\u2713 刚才那个文件已经保存好了";
+  box.appendChild(ttl);
+
+  var fn = document.createElement("p");
+  fn.className = "fname";
+  fn.textContent = s.filename + " · " + Number(s.size).toLocaleString() + " 字节";
+  box.appendChild(fn);
+
+  var wh = document.createElement("p");
+  wh.className = "where";
+  wh.textContent = "在手机的「文件」App →「下载」里找它，然后导入香色闺阁" +
+    (s.fmt === "json" ? "对应的阅读器" : "") + "。";
+  box.appendChild(wh);
+
+  var row = document.createElement("div");
+  row.className = "row";
+  var again = document.createElement("button");
+  again.type = "button";
+  again.textContent = "没找到？再存一次";
+  again.addEventListener("click", function () {
+    /* 站和 key 都还在（key 存在 localStorage 里），直接重跑一次生成流程 */
+    if (s.site && SITES[s.site]) selectSite(s.site);
+    box.hidden = true;
+    run();
+  });
+  row.appendChild(again);
+  box.appendChild(row);
+
+  box.hidden = false;
 }
 
 
@@ -986,13 +1090,25 @@ function run() {
     setHint("ok", "\u2713", "已生成 " + r.slotCount + " 处替换，可以导入了");
 
     /* ↓ 整段点击处理的最后一个同步动作：触发下载（仍在手势调用栈里）。
-       紧接着让出主线程，给浏览器重画地址栏的机会。 */
+       紧接着让出主线程。 */
     triggerDownload(url, filename);
     setTimeout(yieldOnce, 0);
-    /* 滚动放到再后面一点，免得平滑滚动和上面那次地址栏重排互相干扰 */
-    setTimeout(function () {
-      if (result.scrollIntoView) result.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }, 60);
+    /* 下载发出去之后，刷新一次页面。
+       为什么必须刷新（用户实测确认的唯一可靠办法）：
+       iOS Safari 的底部工具栏在页面上下滑动时会自动收起 —— 左下角那个「大小」
+       和下载图标会一起消失。我们这一页生成后会滚动到结果面板，工具栏就收起来了，
+       下载标识没有地方显示，所以看起来"没出现"；切标签页或点刷新让工具栏恢复
+       展开，它立刻就出现了。刷新是唯一能可靠重置工具栏的动作。
+       刷新前把结果存进 sessionStorage，刷新后原样恢复，不会重复下载。 */
+    scheduleReloadAfterDownload({
+      site: curSite,
+      fmt: curFmt,
+      filename: filename,
+      size: data.size,
+      aliases: r.aliases,
+      slotCount: r.slotCount,
+      t: Date.now()
+    });
   } catch (e) {
     showFatal("生成失败", String(e && e.message ? e.message : e));
   } finally {
@@ -1053,6 +1169,24 @@ syncSegLabels();
 curSite = DEFAULT_SITE;
 selectSite(DEFAULT_SITE);
 booted = true;
+
+/* 刚才是「下载后自动刷新」回来的？把结果原样显示出来。
+   顺序有讲究：先把站点切回刚才那一份，再显示横幅。
+   不自动滚动到结果面板 —— 一滚 iOS 的底部工具栏又收起，图标又没了；
+   横幅就在页面最上面，不滚动就能看见。 */
+(function () {
+  var s = takeSaved();
+  if (!s) return;
+  if (s.site && SITES[s.site]) selectSite(s.site);
+  if (s.fmt) selectFmt(s.fmt);
+  /* 停在页面顶部：滚下去的话 iOS 底部工具栏是收起的，图标又看不见了。
+     上面已经设了 scrollRestoration = "manual"，这里再显式回一次顶，双保险。 */
+  try { window.scrollTo(0, 0); } catch (e) {}
+  /* key 得还在才敢提示"再存一次"，否则会生成一个没有 key 的文件。
+     key 存在 localStorage 里，正常情况刷新后还在。 */
+  if (!cleanKey(input.value)) return;
+  showSavedBanner(s);
+})();
 </script>
 </body>
 </html>
