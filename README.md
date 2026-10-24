@@ -18,7 +18,7 @@
 | | 重生聚合v2.0.2 | syiism聚合v3.2.2 |
 | --- | --- | --- |
 | 网站 | chongsheng.dpdns.org | loomproxy.dpdns.org |
-| 能不能注册 | **不能**（已停止） | **能** |
+| 能不能注册 | **能** | **能** |
 | 书源别名 | 4 个 | 4 个 |
 | 平台 / 数据源 | 约 36 个 | 约 37 个 |
 | 漫画 | 有 | 有 |
@@ -68,7 +68,7 @@
 两个站的面板路径一样，都是 **个人中心 → API 密钥 → 创建密钥**：
 
 - syiism聚合v3.2.2 `https://loomproxy.dpdns.org/panel/profile` —— **注册开放**，点「注册新用户」即可。
-- 重生聚合v2.0.2 `https://chongsheng.dpdns.org/panel/import` —— **已停止注册**，只有以前注册过的账号才有 key。
+- 重生聚合v2.0.2 `https://chongsheng.dpdns.org/panel/import` —— **可以自己注册**，入口在面板的「注册新用户」。
 
 **每人用自己那把，各自消耗各自的额度。**
 
